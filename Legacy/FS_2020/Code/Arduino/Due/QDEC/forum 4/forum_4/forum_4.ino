@@ -1,0 +1,147 @@
+
+/*
+** Quadrature Encoder on Arduino Due in "Speed Mode"
+** Will not work on other Arduino types because of a specific hardware requirement.
+**
+** @bungle99 / 2014-02-28
+**
+** Many thanks to @Designservicecorp (notably post #32 and post #42) that gave me the base to work from.
+**
+** Uses *hardware* to do the heavy lifting of interpreting the Encoder output, which gives it significant
+** advantage over other Arduino's for this use case. Eg many people have reported their Unos maxing out
+** or skipping counts when interpretting high RPMs, whereas people using the Due in hardware mode have
+** reported better success with high RPMs.
+**
+** This particular example puts the hardware into "Speed" mode, whereas other examples in this thread use
+** "Position" mode (see posts 32, 42). The one example in the thread that attempts Speed calcs uses Position
+** Mode and uses an interrupt on the Z Index axis to manually apply a time period (needed to caculate speed)
+** on each rotation.
+**
+** This code below has been used in tests (using Lego NXT and a gear train for driving / comparison) to
+** ~3,500 RPM with a 1,024 PPR Encoder (4 x 1,024 Edges). The Arduino didn't seem to struggle and the
+** numbers (eg RPM) matched fairly closely with the Lego (eg as a sanity check, the calcs in the code look
+** correct).
+**
+** I bought one of these encoders, which seems ok;
+**
+**   * http://proto-pic.co.uk/rotary-encoder-1024-p-r-quadrature/
+**
+** Great service from proto-pic. The encoder specs are officially
+**
+**   * http://dlnmh9ip6v2uc.cloudfront.net/datasheets/Robotics/E6B2Encoders.pdf
+**
+** But look an awful lot like this one too (which is easier to read)
+**
+**   * http://www.ia.omron.com/product/item/e6b27032r/index.html
+**
+** Note that this Encoder is rated at 5V min. I've successully powered it off the 5V Arduino pin header,
+** and it doesn't work off the 3.3V one. At 5V, the outputs need to be run through some resistors to bring
+** them into tolerance of the Arduino inputs.
+**
+** The inputs are 2 and 13 (and optionally A6 for the index).
+**
+** The test hardware (some Lego NXT servos and gear train) was unable to turn any faster (more gears
+** stalled the servos) - eg the Arduino Due was not the limiting factor. At this speed, the Due Hardware
+** is dealing with approx 238,000 edges per second.
+**
+** This example offloads the speed calculation onto the hardware, meaning no interrupt is required.
+** In addition, the index is not required either, so it allows speeds to be seen even for rotations that
+** don't pass the index marker (for example, slow rotations needing a speed before a complete rotation).
+** That said, index is available if you want it and the docs suggest you can still use it (and others) as
+** interrupt if you wish.
+**
+** NB There appears to be a myriad of features on the Chip that have not been touched. Eg you can still add
+** interrupts to this code to do other things; eg passing the Z index, direction changes. There are also
+** filters available if your encoder suffers from noise (eg vibrations). All this is available to play with
+** another day :)
+**
+** Code appears to work, but no guarantees. Understand it. Test it. Feedback to the group. YMMV. Don't blame
+** me if it doesn't work or expolodes!
+*/
+
+const int ENCODER_EDGES_PER_ROTATION = 1024 * 4;  // this depends on your encoder
+const int ENCODER_SAMPLES_PER_SECOND = 10;        // this will need to be tuned depending on your use case...
+const int LOOP_DELAY_MS = 1 * 1000;               // ... as will this (see comments in main code)
+
+void setup() {
+ 
+  Serial.begin(115200); 
+  delay(10);
+
+
+  // Setup Quadrature Encoder
+  // http://www.atmel.com/Images/doc11057.pdf
+  // Section 37 p869
+  // Section 37.6.14 p885
+  // Section 37.6.14.2 p890 Position and Rotation Measurement
+  // Section 37.6.14.5 p891 Speed Measurement (what this is about)
+
+  REG_PMC_PCER0 = PMC_PCER0_PID27
+                | PMC_PCER0_PID28
+                | PMC_PCER0_PID29;
+
+  // Setup a channel in waveform mode (eg an input into the encoder to trigger the time based sampling)
+  // Note some of the choices here impact calculations below and if you change them, you need to change
+  // the next section to suit.
+  // Section 37.7.11 p906 (also refer to Section 37.6.14.5 p891 for detail of what to set)
+  REG_TC0_CMR2 = TC_CMR_TCCLKS_TIMER_CLOCK4
+               | TC_CMR_WAVE
+               | TC_CMR_ACPC_TOGGLE
+               | TC_CMR_WAVSEL_UP_RC;
+
+  // Now define the sample period, using the clock chosen above as the basis
+  // Note that REG_TC0_CMR2 above is using CLOCK4; this is an 128 divisor. You need to change the
+  // divisor below if you change the clock above. You could change the input clock and the RC mode to
+  // suit your app (eg how many pulses are you  expecting - depends on encoder type
+  // and slowest/normal/fastest rotation speed and what you want to do with the result).
+  // Section 37.6.14.5 p891 notes you need to set this up, otherwise 0 comes out all the time :-)
+  REG_TC0_RC2 = F_CPU / 128 / ENCODER_SAMPLES_PER_SECOND;
+ 
+  // Setup a channel in capture mode
+  // Section 37.7.10 p904 (also refer to Section 37.6.14.5 p891 for detail of what to set)
+  REG_TC0_CMR0 = TC_CMR_ABETRG
+               | TC_CMR_LDRA_EDGE
+               | TC_CMR_LDRB_EDGE
+               | TC_CMR_ETRGEDG_EDGE
+               | TC_CMR_CPCTRG;
+
+  // Enable features, noting Speed not Position is chosen
+  // Section 37.7.2 p895 (also refer to Section 37.6.14.5 p891 for detail of what to set)
+  REG_TC0_BMR = TC_BMR_QDEN
+              | TC_BMR_SPEEDEN
+              | TC_BMR_EDGPHA;
+
+ 
+  // Set everything going
+  REG_TC0_CCR0 = TC_CCR_CLKEN | TC_CCR_SWTRG; 
+  REG_TC0_CCR1 = TC_CCR_CLKEN | TC_CCR_SWTRG; 
+  REG_TC0_CCR2 = TC_CCR_CLKEN | TC_CCR_SWTRG; 
+}
+
+void loop() {
+
+  int iIndexCount = REG_TC0_CV1;  // Don't need this, but manual notes its available 
+  int iSpeedPPP = REG_TC0_RA0;    // This is what we're really after (speed in Pulses Per sample Period)
+ 
+  // which we can convert to rps or rpm easily
+  double dSpeedRPS = ((iSpeedPPP / (ENCODER_EDGES_PER_ROTATION * 1.0)) * ENCODER_SAMPLES_PER_SECOND);
+  double dSpeedRPM =  dSpeedRPS * 60;
+ 
+  Serial.print("Speed ppp: ");
+  Serial.print(iSpeedPPP);
+  Serial.print(", ");
+  Serial.print("Speed rps: ");
+  Serial.print(dSpeedRPS);
+  Serial.print(", ");
+  Serial.print("Speed rpm: ");
+  Serial.print(dSpeedRPM);
+  Serial.print(", ");
+  Serial.print("Indexes: ");
+  Serial.print(iIndexCount);
+  Serial.print(". ");
+  Serial.println();
+
+  // Slow down the main loop noting the Encoder can update independently in the background (we're
+  // effectively polling it to find out the latest and greatest info on each loop around).
+  delay(LOOP_DELAY_MS);
+}

@@ -1,0 +1,4 @@
+the fault test script uses the arduino, converter, and serial scripts. 
+make sure the fault test script is in the same directory as the above scripts.
+the fault test out puts a textfile ("output.txt")
+two space separated numbers: pressure and time.
