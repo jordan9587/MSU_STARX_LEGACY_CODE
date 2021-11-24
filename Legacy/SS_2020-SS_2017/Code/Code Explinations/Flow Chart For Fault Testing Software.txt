@@ -1,0 +1,21 @@
+1>>>Flow Chart For Fault testing
+
+1) Send ADC (1 value only) request 					--
+2) Recieve ADC value for pressure in actuator
+3) Convert to usable value
+4) Determine if at 100 DutyCycle or 0
+4.5***) Record PSI value into notepad with time stamp
+5) Change to inverse of present value (0->100,100->0)
+6) Convert new value into sendable data
+7) Send data to arduino
+8) Wait time period
+9) Loop to step (1)
+
+2>>>Flow Chart For Setting r(t)
+
+1) Send ADC (2 values) request
+2) Recieve ADC value for pressure & EMG(POT)
+3) Convert ADCs into usable values
+4) Set setpoint to Pressure(emg value), run PID
+6) Convert output value into sendable data
+7) Send data to arduino
